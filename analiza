@@ -1,0 +1,147 @@
+import requests
+import pandas as pd
+import numpy as np
+from collections import Counter
+from itertools import combinations
+
+# Pobranie danych
+url = 'http://www.mbnet.com.pl/ml.txt'
+response = requests.get(url)
+with open('ml.txt', 'wb') as f:
+    f.write(response.content)
+
+# Wczytanie i przetworzenie danych
+with open('ml.txt', 'r', encoding='latin1') as f:
+    content = f.readlines()
+
+data = []
+for line in content:
+    parts = line.strip().split(' ', 2)
+    if len(parts) == 3:
+        draw_number = parts[0]
+        date = parts[1]
+        results = parts[2]
+        data.append([draw_number, date, results])
+
+df = pd.DataFrame(data, columns=['Draw Number', 'Date', 'Results'])
+df['Date'] = pd.to_datetime(df['Date'], format='%d.%m.%Y')
+results_expanded = df['Results'].str.split(',', expand=True)
+results_expanded.columns = [f'Number_{i+1}' for i in range(results_expanded.shape[1])]
+df = pd.concat([df, results_expanded], axis=1)
+df.drop(columns=['Results'], inplace=True)
+
+# Pobranie liczby losowań do analizy od użytkownika
+num_draws_to_analyze = int(input("Ile ostatnich losowań chcesz wziąć pod uwagę? "))
+df_last_n_draws = df.tail(num_draws_to_analyze)
+
+# Analiza częstości występowania liczb
+def count_number_frequency(df):
+    number_columns = [f'Number_{i+1}' for i in range(20)]
+    all_numbers = df[number_columns].values.flatten()
+    unique, counts = np.unique(all_numbers, return_counts=True)
+    frequency_dict = dict(zip(unique, counts))
+    frequency_df = pd.DataFrame(list(frequency_dict.items()), columns=['Number', 'Frequency']).sort_values(by='Frequency', ascending=False)
+    return frequency_df
+
+# Analiza liczb, które długo się nie pojawiły
+def analyze_long_absent_numbers(df, total_numbers=80):
+    all_numbers = set(range(1, total_numbers + 1))
+    appeared_numbers = set(int(x) for col in df.columns[2:] for x in df[col].values)
+    absent_numbers = all_numbers - appeared_numbers
+    last_seen = {}
+    for number in appeared_numbers:
+        last_occurrence = df[df.apply(lambda row: str(number) in row[2:].values, axis=1)].index
+        if not last_occurrence.empty:
+            last_seen[number] = last_occurrence.max()
+        else:
+            last_seen[number] = -1
+    absent_durations = {number: len(df) - last_seen.get(number, -1) for number in absent_numbers}
+    return sorted(absent_durations.items(), key=lambda x: x[1], reverse=True)
+
+# Analiza sekwencji liczb
+def analyze_sequences(df, sequence_size=5):
+    sequences = Counter()
+    for result in df.iloc[:, 2:].values:
+        sorted_result = sorted(result)
+        sequences.update(combinations(sorted_result, sequence_size))
+    return sequences.most_common(10)
+
+# Pobranie liczby liczb do wytypowania i liczby zestawów od użytkownika
+num_numbers_to_select = int(input("Ile liczb chcesz wytypować w jednym zestawie? "))
+num_sets_to_generate = int(input("Ile zestawów liczb chcesz wygenerować? "))
+
+# Generowanie zestawów liczb
+all_selected_numbers = []
+used_numbers = set()
+
+for _ in range(num_sets_to_generate):
+    selected_numbers = set()
+
+    # Dodaj liczby, które długo się nie pojawiły
+    long_absent_numbers = analyze_long_absent_numbers(df_last_n_draws.tail(8))
+    for number, duration in long_absent_numbers:
+        if len(selected_numbers) < num_numbers_to_select and str(number) not in used_numbers:
+            selected_numbers.add(str(number))
+            used_numbers.add(str(number))
+
+    # Dodaj najczęściej występujące liczby
+    frequency_df = count_number_frequency(df_last_n_draws)
+    for number in frequency_df['Number'].astype(str).values:
+        if len(selected_numbers) < num_numbers_to_select and number not in used_numbers:
+            selected_numbers.add(number)
+            used_numbers.add(number)
+
+    # Dodaj liczby z najczęstszych kombinacji
+    most_common_quintuples = analyze_sequences(df_last_n_draws, sequence_size=5)
+    most_common_sextuples = analyze_sequences(df_last_n_draws, sequence_size=6)
+
+    for comb, _ in most_common_quintuples:
+        if len(selected_numbers) < num_numbers_to_select:
+            for number in comb:
+                if str(number) not in used_numbers:
+                    selected_numbers.add(str(number))
+                    used_numbers.add(str(number))
+
+    for comb, _ in most_common_sextuples:
+        if len(selected_numbers) < num_numbers_to_select:
+            for number in comb:
+                if str(number) not in used_numbers:
+                    selected_numbers.add(str(number))
+                    used_numbers.add(str(number))
+
+    all_selected_numbers.append(list(selected_numbers)[:num_numbers_to_select])
+
+# Wyświetlenie wytypowanych zestawów liczb
+for idx, selected_numbers in enumerate(all_selected_numbers, 1):
+    print(f"Zestaw {idx}: {','.join(selected_numbers)}")
+
+# Funkcja sprawdzająca, ile liczb z kombinacji pojawiło się kiedykolwiek i kiedy
+def check_combination_existence(df, combination, min_count):
+    combination_set = set(combination)
+    results = []
+    for _, row in df.iterrows():
+        drawn_numbers = set(row[2:].astype(str))
+        common_numbers = combination_set.intersection(drawn_numbers)
+        if len(common_numbers) >= min_count:
+            results.append((row['Draw Number'], row['Date'], len(common_numbers), sorted(common_numbers)))
+    return results
+
+# Pobranie liczby losowań do analizy od użytkownika
+num_draws_to_check = int(input("Ile losowań wstecz chcesz sprawdzić? "))
+df_check_draws = df.tail(num_draws_to_check)
+
+# Pobranie zakresu trafień od użytkownika
+min_hits = int(input("Podaj minimalną liczbę trafień do wyszukania: "))
+max_hits = int(input("Podaj maksymalną liczbę trafień do wyszukania: "))
+
+# Sprawdzenie, ile liczb z wytypowanej kombinacji pojawiło się w zadanej liczbie losowań wstecz
+for idx, selected_numbers in enumerate(all_selected_numbers, 1):
+    results = check_combination_existence(df_check_draws, selected_numbers, min_hits)
+    if results:
+        print(f"\nZestaw {idx}: {','.join(selected_numbers)}")
+        for idx, result in enumerate(results, 1):
+            if min_hits <= result[2] <= max_hits:
+                print(f"{idx:04d}. {result[1].strftime('%d.%m.%Y')} linia {result[2]}/10 - liczby: {', '.join(result[3])}")
+    else:
+        print(f"\nZestaw {idx}: {','.join(selected_numbers)}")
+        print("Nie znaleziono losowań spełniających kryteria.")
